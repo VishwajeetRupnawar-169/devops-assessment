@@ -1,0 +1,153 @@
+# .github/workflows/hf-agent-workflow.yml
+#
+# Simple custom agent workflow powered by the Hugging Face Inference API.
+# Triggers: push to main, or manual run via workflow_dispatch.
+#
+# What it does (basic functionality):
+#   1. Checks out the repo and gathers context (latest commit diff / a task prompt).
+#   2. Calls a Hugging Face model via the Inference API with that context.
+#   3. Saves the model's response to a file.
+#   4. Uploads it as a workflow artifact.
+#   5. Posts a summary to the GitHub Actions run summary, and (on push) as a
+#      commit comment, so the result is visible without opening logs.
+#
+# Setup required:
+#   - Add your Hugging Face token as a repo secret named HF_API_KEY
+#     (Settings -> Secrets and variables -> Actions -> New repository secret)
+#   - Optionally change HF_MODEL to whichever model you want to call.
+
+name: HF Agent Workflow
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Task/prompt for the agent (used instead of the commit diff)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  HF_MODEL: "meta-llama/Llama-3.1-8B-Instruct"   # swap for any model you have access to
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2   # need previous commit to diff against on push
+
+      - name: Build task context
+        id: context
+        run: |
+          if [ -n "${{ github.event.inputs.prompt }}" ]; then
+            TASK="${{ github.event.inputs.prompt }}"
+          else
+            TASK="Summarize the intent of this commit and flag anything risky:\n\n$(git diff HEAD~1 HEAD --stat)"
+          fi
+          # Save multiline-safe for later steps
+          {
+            echo "task<<EOF"
+            echo -e "$TASK"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Call Hugging Face Inference API
+        id: agent
+        env:
+          HF_API_KEY: ${{ secrets.HF_API_KEY }}
+          TASK: ${{ steps.context.outputs.task }}
+        run: |
+          set -euo pipefail
+
+          # Build JSON payload safely
+          python3 - <<'PYEOF'
+          import json, os
+          payload = {
+              "inputs": os.environ["TASK"],
+              "parameters": {"max_new_tokens": 300, "temperature": 0.3}
+          }
+          with open("payload.json", "w") as f:
+              json.dump(payload, f)
+          PYEOF
+
+          HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" \
+            -X POST "https://api-inference.huggingface.co/models/${HF_MODEL}" \
+            -H "Authorization: Bearer ${HF_API_KEY}" \
+            -H "Content-Type: application/json" \
+            --data @payload.json)
+
+          echo "HTTP status: $HTTP_STATUS"
+          cat response.json
+
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "Hugging Face API call failed with status $HTTP_STATUS"
+            exit 1
+          fi
+
+          # Extract generated text (structure varies by model/task type)
+          python3 - <<'PYEOF'
+          import json
+          with open("response.json") as f:
+              data = json.load(f)
+          if isinstance(data, list) and data and "generated_text" in data[0]:
+              text = data[0]["generated_text"]
+          elif isinstance(data, dict) and "generated_text" in data:
+              text = data["generated_text"]
+          else:
+              text = json.dumps(data, indent=2)
+          with open("agent-output.md", "w") as f:
+              f.write("## Agent output\n\n" + text + "\n")
+          PYEOF
+
+      - name: Retry once on failure
+        if: failure() && steps.agent.outcome == 'failure'
+        run: |
+          echo "Retrying Hugging Face call once..."
+          sleep 5
+          curl -s -X POST "https://api-inference.huggingface.co/models/${HF_MODEL}" \
+            -H "Authorization: Bearer ${{ secrets.HF_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            --data @payload.json -o response.json
+
+      - name: Write run summary
+        if: always()
+        run: |
+          if [ -f agent-output.md ]; then
+            cat agent-output.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Agent did not produce output for this run." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload agent output as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hf-agent-output-${{ github.run_id }}
+          path: |
+            agent-output.md
+            response.json
+          retention-days: 30
+
+      - name: Post result as commit comment (push events only)
+        if: github.event_name == 'push'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = 'Agent produced no output.';
+            if (fs.existsSync('agent-output.md')) {
+              body = fs.readFileSync('agent-output.md', 'utf8');
+            }
+            await github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body
+            });

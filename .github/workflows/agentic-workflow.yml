@@ -20,26 +20,40 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Analyze repository
         id: agent
         env:
-          HF_TOKEN: ${{ secrets.HF_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           echo "Analyzing repository with AI agent..."
 
-          FILES=$(git diff --name-only HEAD^ HEAD)
+          # Handle first commit and subsequent commits
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            FILES=$(git diff --name-only HEAD^ HEAD)
+          else
+            FILES=$(git ls-tree -r --name-only HEAD)
+          fi
 
-          echo "Changed files:"
+          echo "Files considered by the agent:"
           echo "$FILES"
 
           PROMPT="You are a DevOps agent.
-          Analyze these changed files:
+
+          Analyze the following repository files:
+
           $FILES
 
           Create a simple CI/CD execution plan.
-          Identify whether the project needs build, test, or deploy.
-          Keep the response short."
+
+          Determine:
+          1. Whether a build is required
+          2. Whether tests are required
+          3. Whether deployment is required
+
+          Return a short plan."
 
           RESPONSE=$(curl -s \
             -X POST \
@@ -62,7 +76,8 @@ jobs:
           echo "AI Agent Response:"
           echo "$RESPONSE"
 
-          PLAN=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // "Run build and tests"')
+          PLAN=$(echo "$RESPONSE" | jq -r \
+            '.choices[0].message.content // "Run build, test and deploy"')
 
           echo "plan<<EOF" >> "$GITHUB_OUTPUT"
           echo "$PLAN" >> "$GITHUB_OUTPUT"

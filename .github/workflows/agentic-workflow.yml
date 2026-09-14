@@ -26,7 +26,7 @@ jobs:
       - name: Analyze repository
         id: agent
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_API_KEY }}
         run: |
           echo "Analyzing repository with AI agent..."
 

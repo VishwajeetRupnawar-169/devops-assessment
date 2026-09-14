@@ -31,12 +31,11 @@ Thumbs.db
 .terraform/
 *.tfstate
 *.tfstate.*
-.terraform.lock.hcl
+
+# Terraform variable files
+*.tfvars
+*.tfvars.json
 
 # Terraform crash logs
 crash.log
 crash.*.log
-
-# Variable files containing secrets
-*.tfvars
-*.tfvars.json

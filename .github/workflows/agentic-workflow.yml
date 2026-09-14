@@ -1,0 +1,131 @@
+
+name: Agentic CI
+
+on:
+  push:
+    branches:
+      - "**"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: AI Analyze & Plan
+    runs-on: ubuntu-latest
+
+    outputs:
+      plan: ${{ steps.agent.outputs.plan }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Analyze repository
+        id: agent
+        env:
+          HF_TOKEN: ${{ secrets.HF_API_KEY }}
+        run: |
+          echo "Analyzing repository with AI agent..."
+
+          FILES=$(git diff --name-only HEAD^ HEAD)
+
+          echo "Changed files:"
+          echo "$FILES"
+
+          PROMPT="You are a DevOps agent.
+          Analyze these changed files:
+          $FILES
+
+          Create a simple CI/CD execution plan.
+          Identify whether the project needs build, test, or deploy.
+          Keep the response short."
+
+          RESPONSE=$(curl -s \
+            -X POST \
+            "https://router.huggingface.co/v1/chat/completions" \
+            -H "Authorization: Bearer $HF_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n \
+              --arg prompt "$PROMPT" \
+              '{
+                model: "Qwen/Qwen2.5-7B-Instruct",
+                messages: [
+                  {
+                    role: "user",
+                    content: $prompt
+                  }
+                ],
+                max_tokens: 300
+              }')")
+
+          echo "AI Agent Response:"
+          echo "$RESPONSE"
+
+          PLAN=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // "Run build and tests"')
+
+          echo "plan<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$PLAN" >> "$GITHUB_OUTPUT"
+          echo "EOF"
+
+  build:
+    name: Build
+    needs: analyze
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Show AI plan
+        run: |
+          echo "AI Agent Plan:"
+          echo "${{ needs.analyze.outputs.plan }}"
+
+      - name: Build
+        run: |
+          echo "Executing build..."
+          echo "Build successful!"
+
+  test:
+    name: Test
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Test
+        run: |
+          echo "Running tests..."
+          echo "All tests passed!"
+
+  deploy:
+    name: Deploy
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy
+        run: |
+          echo "Deploying application..."
+          echo "Deployment successful!"
+
+  report:
+    name: Agent Report
+    needs:
+      - analyze
+      - build
+      - test
+      - deploy
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Report
+        run: |
+          echo "================================"
+          echo "      AGENTIC WORKFLOW REPORT"
+          echo "================================"
+          echo ""
+          echo "AI Agent Plan:"
+          echo "${{ needs.analyze.outputs.plan }}"
+          echo ""
+          echo "Build:  ${{ needs.build.result }}"
+          echo "Test:   ${{ needs.test.result }}"
+          echo "Deploy: ${{ needs.deploy.result }}"

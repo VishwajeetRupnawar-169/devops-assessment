@@ -26,3 +26,17 @@ dist-ssr/
 # OS
 .DS_Store
 Thumbs.db
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+
+# Terraform crash logs
+crash.log
+crash.*.log
+
+# Variable files containing secrets
+*.tfvars
+*.tfvars.json

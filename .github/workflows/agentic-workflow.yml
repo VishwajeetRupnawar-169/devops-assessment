@@ -63,7 +63,7 @@ jobs:
             -d "$(jq -n \
               --arg prompt "$PROMPT" \
               '{
-                model: "Qwen/Qwen2.5-7B-Instruct",
+                model: "meta-llama/Llama-3.1-8B-Instruct",
                 messages: [
                   {
                     role: "user",

@@ -1,24 +1,27 @@
 
-name: Agentic CI
+name: Agentic Workflow
 
 on:
   push:
     branches:
-      - "**"
+      - main
 
 permissions:
   contents: read
 
 jobs:
+
   analyze:
-    name: AI Analyze & Plan
+    name: AI Agent - Analyze & Plan
     runs-on: ubuntu-latest
 
     outputs:
-      plan: ${{ steps.agent.outputs.plan }}
+      build: ${{ steps.agent.outputs.build }}
+      test: ${{ steps.agent.outputs.test }}
+      deploy: ${{ steps.agent.outputs.deploy }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 2
@@ -28,32 +31,38 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_API_KEY }}
         run: |
-          echo "Analyzing repository with AI agent..."
 
-          # Handle first commit and subsequent commits
+          echo "================================"
+          echo "AI AGENT - ANALYSIS"
+          echo "================================"
+
           if git rev-parse HEAD^ >/dev/null 2>&1; then
             FILES=$(git diff --name-only HEAD^ HEAD)
           else
             FILES=$(git ls-tree -r --name-only HEAD)
           fi
 
-          echo "Files considered by the agent:"
+          echo "Changed files:"
           echo "$FILES"
 
-          PROMPT="You are a DevOps agent.
+          PROMPT="You are a DevOps planning agent.
 
-          Analyze the following repository files:
+          Analyze these changed files:
 
           $FILES
 
-          Create a simple CI/CD execution plan.
+          Decide which CI/CD actions are required.
 
-          Determine:
-          1. Whether a build is required
-          2. Whether tests are required
-          3. Whether deployment is required
+          Return ONLY valid JSON.
+          Do not use markdown.
+          Do not explain anything.
 
-          Return a short plan."
+          Required format:
+          {
+            \"build\": true,
+            \"test\": true,
+            \"deploy\": false
+          }"
 
           RESPONSE=$(curl -s \
             -X POST \
@@ -63,63 +72,97 @@ jobs:
             -d "$(jq -n \
               --arg prompt "$PROMPT" \
               '{
-                model: "meta-llama/Llama-3.1-8B-Instruct",
+                model: "meta-llama/Meta-Llama-3.1-8B-Instruct",
                 messages: [
                   {
                     role: "user",
                     content: $prompt
                   }
                 ],
-                max_tokens: 300
+                max_tokens: 100
               }')")
 
-          echo "AI Agent Response:"
+          echo "AI response:"
           echo "$RESPONSE"
 
-          PLAN=$(echo "$RESPONSE" | jq -r \
-            '.choices[0].message.content // "Run build, test and deploy"')
+          CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
 
-          echo "plan<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$PLAN" >> "$GITHUB_OUTPUT"
-          echo "EOF"
+          echo "Agent decision:"
+          echo "$CONTENT"
+
+          # Extract JSON from the model response
+          DECISION=$(echo "$CONTENT" | sed -n '/{/,/}/p' | tr -d '\n')
+
+          echo "Parsed decision:"
+          echo "$DECISION"
+
+          BUILD=$(echo "$DECISION" | jq -r '.build // true')
+          TEST=$(echo "$DECISION" | jq -r '.test // true')
+          DEPLOY=$(echo "$DECISION" | jq -r '.deploy // false')
+
+          echo "Build: $BUILD"
+          echo "Test: $TEST"
+          echo "Deploy: $DEPLOY"
+
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "test=$TEST" >> "$GITHUB_OUTPUT"
+          echo "deploy=$DEPLOY" >> "$GITHUB_OUTPUT"
+
 
   build:
     name: Build
     needs: analyze
+    if: needs.analyze.outputs.build == 'true'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Show AI plan
+      - name: Build application
         run: |
-          echo "AI Agent Plan:"
-          echo "${{ needs.analyze.outputs.plan }}"
-
-      - name: Build
-        run: |
-          echo "Executing build..."
+          echo "================================"
+          echo "BUILD"
+          echo "================================"
+          echo "Agent decided that a build is required."
+          echo "Building application..."
           echo "Build successful!"
+
 
   test:
     name: Test
-    needs: build
+    needs:
+      - analyze
+      - build
+    if: needs.analyze.outputs.test == 'true'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Test
+      - name: Run tests
         run: |
+          echo "================================"
+          echo "TEST"
+          echo "================================"
+          echo "Agent decided that tests are required."
           echo "Running tests..."
           echo "All tests passed!"
 
+
   deploy:
     name: Deploy
-    needs: test
+    needs:
+      - analyze
+      - test
+    if: needs.analyze.outputs.deploy == 'true'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy
+      - name: Deploy application
         run: |
+          echo "================================"
+          echo "DEPLOY"
+          echo "================================"
+          echo "Agent decided that deployment is required."
           echo "Deploying application..."
           echo "Deployment successful!"
+
 
   report:
     name: Agent Report
@@ -132,15 +175,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Report
+      - name: Generate report
         run: |
           echo "================================"
-          echo "      AGENTIC WORKFLOW REPORT"
+          echo "AGENTIC WORKFLOW REPORT"
           echo "================================"
           echo ""
-          echo "AI Agent Plan:"
-          echo "${{ needs.analyze.outputs.plan }}"
+          echo "AI Agent Decision:"
+          echo "Build:  ${{ needs.analyze.outputs.build }}"
+          echo "Test:   ${{ needs.analyze.outputs.test }}"
+          echo "Deploy: ${{ needs.analyze.outputs.deploy }}"
           echo ""
-          echo "Build:  ${{ needs.build.result }}"
-          echo "Test:   ${{ needs.test.result }}"
-          echo "Deploy: ${{ needs.deploy.result }}"
+          echo "Build result:  ${{ needs.build.result }}"
+          echo "Test result:   ${{ needs.test.result }}"
+          echo "Deploy result: ${{ needs.deploy.result }}"
+          echo ""
+          echo "Agentic workflow completed."

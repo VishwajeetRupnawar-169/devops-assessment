@@ -32,7 +32,7 @@ permissions:
   contents: read
 
 env:
-  HF_MODEL: "meta-llama/Llama-3.1-8B-Instruct"   # swap for any model you have access to
+  HF_MODEL: "meta-llama/Llama-3.1-8B-Instruct"   # swap for any chat model available via HF Inference Providers
 
 jobs:
   run-agent:
@@ -66,55 +66,60 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Build JSON payload safely
+          # Build JSON payload safely (OpenAI-compatible chat completions format,
+          # served via Hugging Face's router — the old api-inference.huggingface.co
+          # host is retired and no longer resolves)
           python3 - <<'PYEOF'
           import json, os
           payload = {
-              "inputs": os.environ["TASK"],
-              "parameters": {"max_new_tokens": 300, "temperature": 0.3}
+              "model": os.environ["HF_MODEL"],
+              "messages": [
+                  {"role": "user", "content": os.environ["TASK"]}
+              ],
+              "max_tokens": 300,
+              "temperature": 0.3
           }
           with open("payload.json", "w") as f:
               json.dump(payload, f)
           PYEOF
 
-          HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" \
-            -X POST "https://api-inference.huggingface.co/models/${HF_MODEL}" \
-            -H "Authorization: Bearer ${HF_API_KEY}" \
-            -H "Content-Type: application/json" \
-            --data @payload.json)
+          call_hf() {
+            curl -sS -o response.json -w "%{http_code}" \
+              -X POST "https://router.huggingface.co/v1/chat/completions" \
+              -H "Authorization: Bearer ${HF_API_KEY}" \
+              -H "Content-Type: application/json" \
+              --data @payload.json
+          }
 
+          HTTP_STATUS=$(call_hf) || HTTP_STATUS="000"
           echo "HTTP status: $HTTP_STATUS"
-          cat response.json
+          cat response.json || true
 
-          if [ "$HTTP_STATUS" -ne 200 ]; then
-            echo "Hugging Face API call failed with status $HTTP_STATUS"
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "Hugging Face API call failed with status $HTTP_STATUS — retrying once..."
+            sleep 5
+            HTTP_STATUS=$(call_hf) || HTTP_STATUS="000"
+            echo "HTTP status (retry): $HTTP_STATUS"
+            cat response.json || true
+          fi
+
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "Hugging Face API call failed after retry with status $HTTP_STATUS"
             exit 1
           fi
 
-          # Extract generated text (structure varies by model/task type)
+          # Extract generated text from the OpenAI-compatible response shape
           python3 - <<'PYEOF'
           import json
           with open("response.json") as f:
               data = json.load(f)
-          if isinstance(data, list) and data and "generated_text" in data[0]:
-              text = data[0]["generated_text"]
-          elif isinstance(data, dict) and "generated_text" in data:
-              text = data["generated_text"]
-          else:
+          try:
+              text = data["choices"][0]["message"]["content"]
+          except (KeyError, IndexError, TypeError):
               text = json.dumps(data, indent=2)
           with open("agent-output.md", "w") as f:
               f.write("## Agent output\n\n" + text + "\n")
           PYEOF
-
-      - name: Retry once on failure
-        if: failure() && steps.agent.outcome == 'failure'
-        run: |
-          echo "Retrying Hugging Face call once..."
-          sleep 5
-          curl -s -X POST "https://api-inference.huggingface.co/models/${HF_MODEL}" \
-            -H "Authorization: Bearer ${{ secrets.HF_API_KEY }}" \
-            -H "Content-Type: application/json" \
-            --data @payload.json -o response.json
 
       - name: Write run summary
         if: always()
